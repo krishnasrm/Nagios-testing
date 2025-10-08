@@ -1,5 +1,6 @@
 #!/bin/bash
-
+ip=ip-pool
+ssh root@$ip
 set -e
 
 # Configuration
