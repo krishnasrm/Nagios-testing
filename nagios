@@ -1,148 +1,70 @@
----
-- name: Install Nagios Core and Plugins on RHEL
-  hosts: nagios_servers
-  become: yes
+#!/bin/bash
 
-  vars:
-    nagios_user: nagios
-    nagios_group: nagcmd
-    nagios_admin: nagiosadmin
-    nagios_core_version: "4.4.14"
-    nagios_plugins_version: "2.3.3"
-    net_snmp_version: "5.9.4"
-    httpd_conf_path: "/etc/httpd/conf.d"
-    nagios_url: "https://github.com/NagiosEnterprises/nagioscore/releases/download/nagios-{{ nagios_core_version }}/nagios-{{ nagios_core_version }}.tar.gz"
-    plugins_url: "https://nagios-plugins.org/download/nagios-plugins-{{ nagios_plugins_version }}.tar.gz"
-    net_snmp_url: "https://downloads.sourceforge.net/project/net-snmp/net-snmp/{{ net_snmp_version }}/net-snmp-{{ net_snmp_version }}.tar.gz"
+set -e
 
-  tasks:
+# Configuration
+NAGIOS_VERSION="4.4.14"
+NAGIOS_USER="nagios"
+NAGIOS_GROUP="nagios"
+NAGIOS_ADMIN="nagiosadmin"
+NAGIOS_PASSWORD="nagiosadmin"
+NAGIOS_URL="https://assets.nagios.com/downloads/nagioscore/releases/nagios-${NAGIOS_VERSION}.tar.gz"
+NAGIOS_TAR="/tmp/nagioscore.tar.gz"
+NAGIOS_SRC_DIR="/tmp/nagios-${NAGIOS_VERSION}"
+HTTPD_CONF_DIR="/etc/httpd/conf.d"
 
-  - name: Install required packages
-    dnf:
-      name:
-        - httpd
-        - php
-        - php-cli
-        - gcc
-        - glibc
-        - glibc-common
-        - gd
-        - gd-devel
-        - net-snmp
-        - openssl-devel
-        - wget
-        - unzip
-        - make
-      state: present
+# Step 1: Install dependencies
+echo "📦 Installing required packages..."
+dnf install -y gcc glibc glibc-common perl httpd php wget gd gd-devel openssl-devel unzip tar make
 
-  - name: Create nagios user and group
-    user:
-      name: "{{ nagios_user }}"
-      group: "{{ nagios_group }}"
-      groups: apache
-      append: yes
-    notify: Restart Apache
+# Step 2: Create user and group
+echo "👤 Creating Nagios user and group..."
+groupadd --system "$NAGIOS_GROUP" || true
+useradd --system -g "$NAGIOS_GROUP" -s /sbin/nologin "$NAGIOS_USER" || true
 
-  - name: Ensure nagcmd group exists
-    group:
-      name: "{{ nagios_group }}"
-      state: present
+# Step 3: Download Nagios Core
+echo "🌐 Downloading Nagios Core v$NAGIOS_VERSION..."
+wget -4 --no-check-certificate -O "$NAGIOS_TAR" "$NAGIOS_URL"
 
-  - name: Add apache to nagcmd group
-    user:
-      name: apache
-      groups: "{{ nagios_group }}"
-      append: yes
+# Step 4: Extract source
+echo "📂 Extracting source..."
+rm -rf "$NAGIOS_SRC_DIR"
+tar -xzf "$NAGIOS_TAR" -C /tmp
 
-  - name: Download Nagios Core
-    get_url:
-      url: "{{ nagios_url }}"
-      dest: /tmp/nagios.tar.gz
+# Step 5: Compile and install
+cd "$NAGIOS_SRC_DIR"
+echo "⚙️ Configuring Nagios..."
+./configure --with-command-group=$NAGIOS_GROUP --with-httpd-conf=$HTTPD_CONF_DIR
 
-  - name: Extract Nagios Core
-    unarchive:
-      src: /tmp/nagios.tar.gz
-      dest: /tmp
-      remote_src: yes
+echo "🔧 Building Nagios..."
+make all
 
-  - name: Compile and install Nagios Core
-    shell: |
-      ./configure --with-httpd-conf={{ httpd_conf_path }}
-      make all
-      make install
-      make install-init
-      make install-commandmode
-      make install-config
-      make install-webconf
-    args:
-      chdir: "/tmp/nagios-{{ nagios_core_version }}"
+echo "👥 Installing users and groups..."
+make install-groups-users
+usermod -a -G "$NAGIOS_GROUP" apache
 
-  - name: Set Nagios Web Admin Password
-    shell: htpasswd -b -c /usr/local/nagios/etc/htpasswd.users {{ nagios_admin }} "{{ nagios_admin }}"
-    args:
-      creates: /usr/local/nagios/etc/htpasswd.users
+echo "💾 Installing Nagios..."
+make install
+make install-daemoninit
+make install-commandmode
+make install-config
+make install-webconf
 
-  - name: Download Nagios Plugins
-    get_url:
-      url: "{{ plugins_url }}"
-      dest: /tmp/nagios-plugins.tar.gz
+# Step 6: Web UI setup
+echo "🔐 Setting Nagios web admin password..."
+htpasswd -b -c /usr/local/nagios/etc/htpasswd.users "$NAGIOS_ADMIN" "$NAGIOS_PASSWORD"
 
-  - name: Extract Nagios Plugins
-    unarchive:
-      src: /tmp/nagios-plugins.tar.gz
-      dest: /tmp
-      remote_src: yes
+# Step 7: Enable and start services
+echo "🚀 Enabling and starting services..."
+systemctl enable httpd
+systemctl start httpd
+systemctl enable nagios
+systemctl start nagios
 
-  - name: Compile and install Nagios Plugins
-    shell: |
-      ./configure --with-nagios-user={{ nagios_user }} --with-nagios-group={{ nagios_user }}
-      make
-      make install
-    args:
-      chdir: "/tmp/nagios-plugins-{{ nagios_plugins_version }}"
+# Step 8: Verify Nagios config
+echo "🔍 Verifying Nagios configuration..."
+/usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg
 
-  - name: Set SELinux to permissive temporarily
-    command: setenforce 0
-    when: ansible_selinux.status == "enabled"
-
-  - name: Make SELinux permissive permanently
-    replace:
-      path: /etc/selinux/config
-      regexp: '^SELINUX=enforcing'
-      replace: 'SELINUX=permissive'
-
-  - name: Open firewall ports for HTTP/HTTPS
-    firewalld:
-      service: "{{ item }}"
-      permanent: yes
-      state: enabled
-      immediate: yes
-    loop:
-      - http
-      - https
-
-  - name: Enable and start Nagios service
-    systemd:
-      name: nagios
-      enabled: yes
-      state: started
-
-  - name: Enable and start Apache
-    systemd:
-      name: httpd
-      enabled: yes
-      state: started
-
-  - name: Verify Nagios config
-    command: /usr/local/nagios/bin/nagios -v /usr/local/nagios/etc/nagios.cfg
-    register: nagios_check
-
-  - name: Display Nagios verification output
-    debug:
-      var: nagios_check.stdout_lines
-
-  handlers:
-    - name: Restart Apache
-      systemd:
-        name: httpd
-        state: restarted
+echo "✅ Nagios Core v$NAGIOS_VERSION installation complete!"
+echo "🌐 Access it at: http://<your-server-ip>/nagios/"
+echo "🔐 Login with user: $NAGIOS_ADMIN"
