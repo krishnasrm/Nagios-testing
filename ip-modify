@@ -1,0 +1,17 @@
+- name: Configure static IP using nmcli
+  ansible.builtin.command: >
+    nmcli connection modify eth0
+    ipv4.addresses 192.168.1.28/24
+    ipv4.gateway 192.168.1.1
+    ipv4.dns 8.8.8.8
+    ipv4.method manual
+  become: true
+
+- name: Bring connection down
+  ansible.builtin.command: nmcli connection down eth0
+  become: true
+
+- name: Bring connection up
+  ansible.builtin.command: nmcli connection up eth0
+  become: true
+
